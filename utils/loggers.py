@@ -53,6 +53,7 @@ class Logger:
         self.forgetting_mask_classes = None
         self.cpu_res = []
         self.gpu_res = []
+        self.epoch_times = []
 
     def dump(self):
         """
@@ -70,6 +71,7 @@ class Logger:
             'fwt_mask_classes': self.fwt_mask_classes,
             'bwt_mask_classes': self.bwt_mask_classes,
             'forgetting_mask_classes': self.forgetting_mask_classes,
+            'epoch_times': self.epoch_times,
         }
         if self.setting == 'class-il':
             dic['accs_mask_classes'] = self.accs_mask_classes
@@ -92,6 +94,7 @@ class Logger:
         self.fwt_mask_classes = dic['fwt_mask_classes']
         self.bwt_mask_classes = dic['bwt_mask_classes']
         self.forgetting_mask_classes = dic['forgetting_mask_classes']
+        self.epoch_times = dic.get('epoch_times', [])
         if self.setting == 'class-il':
             self.accs_mask_classes = dic['accs_mask_classes']
             self.fullaccs_mask_classes = dic['fullaccs_mask_classes']
@@ -116,6 +119,17 @@ class Logger:
         if self.setting == 'class-il':
             self.accs_mask_classes = self.accs_mask_classes[:-num]
             self.fullaccs_mask_classes = self.fullaccs_mask_classes[:-num]
+
+    def log_epoch_time(self, task: int, epoch: int, seconds: float) -> None:
+        """
+        Logs the elapsed wall-clock time for one training epoch.
+        """
+        self.epoch_times.append({
+            'task': task,
+            'epoch': epoch,
+            'seconds': seconds,
+            'minutes': seconds / 60,
+        })
 
     def add_fwt(self, results, accs, results_mask_classes, accs_mask_classes):
         """
@@ -232,6 +246,9 @@ class Logger:
         wrargs['forward_transfer'] = self.fwt
         wrargs['backward_transfer'] = self.bwt
         wrargs['forgetting'] = self.forgetting
+        wrargs['epoch_times'] = self.epoch_times
+        for item in self.epoch_times:
+            wrargs[f"epoch_time_task{item['task']}_epoch{item['epoch']}_seconds"] = item['seconds']
 
         target_folder = smart_joint(base_path(), self.args.results_path)
 

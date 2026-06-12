@@ -9,6 +9,7 @@ import numpy as np
 import copy
 import math
 import os
+import time
 from argparse import Namespace
 from typing import Iterable, Optional
 import logging
@@ -255,6 +256,7 @@ def train(model: ContinualModel, dataset: ContinualDataset,
                     logging.info(f"Task {cur_task + 1}")  # at least print the task number
 
                 while True:
+                    epoch_start_time = time.perf_counter()
                     model.meta_begin_epoch(epoch, dataset)
 
                     train_pbar.set_description(f"Task {cur_task + 1} - Epoch {epoch + 1}")
@@ -263,6 +265,10 @@ def train(model: ContinualModel, dataset: ContinualDataset,
                                        system_tracker=system_tracker, scheduler=scheduler)
 
                     model.meta_end_epoch(epoch, dataset)
+                    epoch_time = time.perf_counter() - epoch_start_time
+                    logging.info(f"Task {cur_task + 1} - Epoch {epoch + 1} took {epoch_time:.2f}s")
+                    if not args.disable_log:
+                        logger.log_epoch_time(cur_task + 1, epoch + 1, epoch_time)
 
                     epoch += 1
                     if args.fitting_mode == 'epochs' and epoch >= model.args.n_epochs:
