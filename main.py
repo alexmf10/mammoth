@@ -472,6 +472,8 @@ def initialize(
 
     device = get_device(avail_devices=args.device)
     args.device = device
+    from utils.vram import configure_cuda_memory_limit
+    configure_cuda_memory_limit(args)
 
     # set base path
     base_path(args.base_path)

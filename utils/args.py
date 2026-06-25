@@ -401,6 +401,11 @@ def add_management_args(parser: ArgumentParser) -> None:
     mng_group.add_argument('--stop_after', type=int, default=None, help="Task limit")
     mng_group.add_argument('--save_after_interrupt', type=binary_to_boolean_type, default=1,
                            help='Whether to save the model checkpoint after an interrupt - SigInt (default: True).')
+    mng_group.add_argument('--vram_peak_log', type=str, default=None,
+                           help='Optional CSV path where Mammoth writes peak CUDA VRAM usage at the end of training. '
+                           'Tracks exact PyTorch allocator peaks and, when available, NVML process memory peaks.')
+    mng_group.add_argument('--cuda_memory_limit_mb', type=float, default=None,
+                           help='Optional per-process PyTorch CUDA allocator limit in MiB. Useful to stress-test whether a run fits in a smaller GPU.')
 
     wandb_group = parser.add_argument_group('Wandb arguments', 'Arguments to manage logging on Wandb.')
 
