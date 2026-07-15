@@ -1,24 +1,69 @@
 """Check that prompt methods load the same pretrained ViT-B/16 base weights."""
 
 from argparse import Namespace
+import gc
+import hashlib
 from pathlib import Path
 import sys
 import types
 
 import timm
 import torch
-import torch.nn as nn
 
 
-EXPECTED_TIMM_VERSION = '0.9.8'
 MODEL_NAME = 'vit_base_patch16_224.augreg_in21k_ft_in1k'
+LEGACY_MODEL_NAME = 'vit_base_patch16_224'
+AUGREG_URL = (
+    'https://storage.googleapis.com/vit_models/augreg/'
+    'B_16-i21k-300ep-lr_0.001-aug_medium1-wd_0.1-do_0.0-sd_0.0--'
+    'imagenet2012-steps_20k-lr_0.01-res_224.npz'
+)
 ROOT = Path(__file__).resolve().parents[1]
 
-if timm.__version__ != EXPECTED_TIMM_VERSION:
+
+def resolve_reference_model_name():
+    available_models = set(timm.list_models(pretrained=True))
+    if MODEL_NAME in available_models:
+        return MODEL_NAME
+    if LEGACY_MODEL_NAME in available_models:
+        return LEGACY_MODEL_NAME
     raise RuntimeError(
-        f'This check requires timm=={EXPECTED_TIMM_VERSION}, found {timm.__version__}. '
-        f'Install it with: python -m pip install timm=={EXPECTED_TIMM_VERSION}'
+        f'Neither {MODEL_NAME} nor its timm 0.4.12 alias {LEGACY_MODEL_NAME} '
+        f'is available in timm=={timm.__version__}.'
     )
+
+
+def state_digest(state_dict):
+    digest = hashlib.sha256()
+    for name in sorted(state_dict):
+        digest.update(name.encode())
+        digest.update(state_dict[name].detach().cpu().contiguous().numpy().tobytes())
+    return digest.hexdigest()
+
+
+reference_model_name = resolve_reference_model_name()
+reference = timm.create_model(reference_model_name, pretrained=True, num_classes=0)
+reference_cfg = getattr(reference, 'pretrained_cfg', getattr(reference, 'default_cfg', {}))
+checkpoint_url = reference_cfg.get('url')
+if checkpoint_url != AUGREG_URL:
+    raise RuntimeError(
+        f'{reference_model_name} in timm=={timm.__version__} resolves to {checkpoint_url!r}, '
+        f'not the expected AugReg artifact {AUGREG_URL!r}.'
+    )
+
+reference_state = reference.state_dict()
+checkpoint_keys = set(reference_state)
+checkpoint_digest = state_digest(reference_state)
+reference_digests = {
+    'patch_embed': state_digest(reference.patch_embed.state_dict()),
+    'blocks': state_digest(reference.blocks.state_dict()),
+    'norm': state_digest(reference.norm.state_dict()),
+    'cls_token': state_digest({'cls_token': reference.cls_token}),
+    'pos_embed': state_digest({'pos_embed': reference.pos_embed}),
+}
+del reference_state
+del reference
+gc.collect()
 
 # Running a file from tests/ does not automatically put the repository root on
 # sys.path. Stub only the top-level models package so importing the three
@@ -34,90 +79,67 @@ from models.dualprompt_utils.vision_transformer import vit_base_patch16_224_dual
 from models.l2p_utils.vit_prompt import vit_base_patch16_224_l2p
 
 
-load_results = {}
-active_load = None
-original_load_state_dict = nn.Module.load_state_dict
+l2p = vit_base_patch16_224_l2p(
+    pretrained=True,
+    num_classes=0,
+    prompt_length=5,
+    embedding_key='cls',
+    prompt_init='uniform',
+    prompt_pool=True,
+    prompt_key=True,
+    pool_size=10,
+    top_k=5,
+    batchwise_prompt=False,
+    prompt_key_init='uniform',
+    head_type='prompt',
+    use_prompt_mask=False,
+)
+
+dualprompt = vit_base_patch16_224_dualprompt(
+    pretrained=True,
+    num_classes=0,
+    prompt_length=5,
+    embedding_key='cls',
+    prompt_init='uniform',
+    prompt_pool=True,
+    prompt_key=True,
+    pool_size=10,
+    top_k=1,
+    batchwise_prompt=True,
+    prompt_key_init='uniform',
+    head_type='token',
+    use_prompt_mask=True,
+    use_g_prompt=True,
+    g_prompt_length=5,
+    g_prompt_layer_idx=[0, 1],
+    use_prefix_tune_for_g_prompt=True,
+    use_e_prompt=True,
+    e_prompt_layer_idx=[2, 3, 4],
+    use_prefix_tune_for_e_prompt=True,
+    same_key_value=False,
+    args=Namespace(use_permute_fix=False),
+)
+
+coda_prompt = CodaPromptModel(
+    num_classes=10,
+    pt=True,
+    prompt_param=[10, [100, 8, 0]],
+)
+coda_vit = coda_prompt.feat
 
 
-def traced_load_state_dict(self, state_dict, strict=True, *args, **kwargs):
-    incompatible = original_load_state_dict(self, state_dict, strict=strict, *args, **kwargs)
-    if active_load is not None:
-        load_results.setdefault(active_load, []).append(incompatible)
-    return incompatible
+def load_result(model):
+    # timm 0.4.12's custom NPZ loader copies tensors directly and does not
+    # return _IncompatibleKeys, so compute the equivalent key report against
+    # the resolved checkpoint. Exact tensor equality is asserted below.
+    model_keys = set(model.state_dict())
+    return sorted(model_keys - checkpoint_keys), sorted(checkpoint_keys - model_keys)
 
-
-nn.Module.load_state_dict = traced_load_state_dict
-try:
-    active_load = 'l2p'
-    l2p = vit_base_patch16_224_l2p(
-        pretrained=True,
-        num_classes=0,
-        prompt_length=5,
-        embedding_key='cls',
-        prompt_init='uniform',
-        prompt_pool=True,
-        prompt_key=True,
-        pool_size=10,
-        top_k=5,
-        batchwise_prompt=False,
-        prompt_key_init='uniform',
-        head_type='prompt',
-        use_prompt_mask=False,
-    )
-
-    active_load = 'dualprompt'
-    dualprompt = vit_base_patch16_224_dualprompt(
-        pretrained=True,
-        num_classes=0,
-        prompt_length=5,
-        embedding_key='cls',
-        prompt_init='uniform',
-        prompt_pool=True,
-        prompt_key=True,
-        pool_size=10,
-        top_k=1,
-        batchwise_prompt=True,
-        prompt_key_init='uniform',
-        head_type='token',
-        use_prompt_mask=True,
-        use_g_prompt=True,
-        g_prompt_length=5,
-        g_prompt_layer_idx=[0, 1],
-        use_prefix_tune_for_g_prompt=True,
-        use_e_prompt=True,
-        e_prompt_layer_idx=[2, 3, 4],
-        use_prefix_tune_for_e_prompt=True,
-        same_key_value=False,
-        args=Namespace(use_permute_fix=False),
-    )
-
-    active_load = 'coda_prompt'
-    coda_prompt = CodaPromptModel(
-        num_classes=10,
-        pt=True,
-        prompt_param=[10, [100, 8, 0]],
-    )
-finally:
-    active_load = None
-    nn.Module.load_state_dict = original_load_state_dict
-
-
-def print_load_result(name, result):
-    print(f'{name}:')
-    print(f'  missing_keys={result.missing_keys}')
-    print(f'  unexpected_keys={result.unexpected_keys}')
-
-
-assert len(load_results.get('l2p', [])) == 1, load_results.get('l2p')
-assert len(load_results.get('dualprompt', [])) == 1, load_results.get('dualprompt')
-# CODA-Prompt first loads the source checkpoint model, then loads that state
-# dict into its prompt-aware ViT. The second result is the method load.
-assert len(load_results.get('coda_prompt', [])) == 2, load_results.get('coda_prompt')
 
 method_results = {
-    'l2p': load_results['l2p'][0],
-    'dualprompt': load_results['dualprompt'][0],
-    'coda_prompt': load_results['coda_prompt'][-1],
+    'l2p': load_result(l2p),
+    'dualprompt': load_result(dualprompt),
+    'coda_prompt': load_result(coda_vit),
 }
 allowed_missing_prefixes = {
     'l2p': ('prompt.',),
@@ -125,16 +147,23 @@ allowed_missing_prefixes = {
     'coda_prompt': ('head.',),
 }
 
+print(f'timm_version={timm.__version__}')
 print(f'checkpoint={MODEL_NAME}')
-for method, result in method_results.items():
-    print_load_result(method, result)
-    assert not result.unexpected_keys, (method, result.unexpected_keys)
-    assert all(key.startswith(allowed_missing_prefixes[method]) for key in result.missing_keys), (method, result.missing_keys)
+print(f'resolved_identifier={reference_model_name}')
+print(f'checkpoint_url={checkpoint_url}')
+print(f'checkpoint_sha256={checkpoint_digest}')
+for method, (missing_keys, unexpected_keys) in method_results.items():
+    print(f'{method}:')
+    print(f'  missing_keys={missing_keys}')
+    print(f'  unexpected_keys={unexpected_keys}')
+    assert not unexpected_keys, (method, unexpected_keys)
+    assert all(key.startswith(allowed_missing_prefixes[method]) for key in missing_keys), (method, missing_keys)
 
 
 @torch.no_grad()
 def assert_module_equal(name, expected, *actuals):
     expected_state = expected.state_dict()
+    assert state_digest(expected_state) == reference_digests[name], f'{name} differs from the checkpoint'
     for actual in actuals:
         actual_state = actual.state_dict()
         assert expected_state.keys() == actual_state.keys(), name
@@ -143,11 +172,11 @@ def assert_module_equal(name, expected, *actuals):
     print(f'{name}: identical')
 
 
-coda_vit = coda_prompt.feat
 assert_module_equal('patch_embed', coda_vit.patch_embed, l2p.patch_embed, dualprompt.patch_embed)
 assert_module_equal('blocks', coda_vit.blocks, l2p.blocks, dualprompt.blocks)
 assert_module_equal('norm', coda_vit.norm, l2p.norm, dualprompt.norm)
 
+assert state_digest({'cls_token': coda_vit.cls_token}) == reference_digests['cls_token']
 assert torch.equal(coda_vit.cls_token, l2p.cls_token)
 assert torch.equal(coda_vit.cls_token, dualprompt.cls_token)
 print('cls_token: identical')
@@ -155,6 +184,7 @@ print('cls_token: identical')
 # L2P inserts prompt positional slots between the cls slot and the patch grid.
 num_patches = coda_vit.patch_embed.num_patches
 l2p_base_pos_embed = torch.cat((l2p.pos_embed[:, :1], l2p.pos_embed[:, -num_patches:]), dim=1)
+assert state_digest({'pos_embed': coda_vit.pos_embed}) == reference_digests['pos_embed']
 assert torch.equal(coda_vit.pos_embed, l2p_base_pos_embed)
 assert torch.equal(coda_vit.pos_embed, dualprompt.pos_embed)
 print('base pos_embed: identical')

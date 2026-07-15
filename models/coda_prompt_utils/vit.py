@@ -7,7 +7,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from timm.layers import trunc_normal_, DropPath
+try:
+    from timm.layers import trunc_normal_, DropPath
+except ImportError:
+    from timm.models.layers import trunc_normal_, DropPath
 
 from backbone.vit import Mlp, VisionTransformer as MammothVP
 

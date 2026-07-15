@@ -55,9 +55,32 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from timm.layers import PatchEmbed, Mlp as TimmMlp, DropPath, trunc_normal_, lecun_normal_, resample_patch_embed, resample_abs_pos_embed # type: ignore[import-untyped]
-from timm.models._builder import build_model_with_cfg # type: ignore[import-untyped]
-from timm.models._manipulate import named_apply # type: ignore[import-untyped]
+try:
+    from timm.layers import PatchEmbed, Mlp as TimmMlp, DropPath, trunc_normal_, lecun_normal_, resample_patch_embed, resample_abs_pos_embed # type: ignore[import-untyped]
+    from timm.models._builder import build_model_with_cfg # type: ignore[import-untyped]
+    from timm.models._manipulate import named_apply # type: ignore[import-untyped]
+    _TIMM_LEGACY = False
+except ImportError:
+    from timm.models.helpers import build_model_with_cfg, named_apply # type: ignore[import-untyped]
+    from timm.models.layers import PatchEmbed as LegacyPatchEmbed, Mlp as TimmMlp, DropPath, trunc_normal_, lecun_normal_ # type: ignore[import-untyped]
+
+    _TIMM_LEGACY = True
+
+    class PatchEmbed(LegacyPatchEmbed):
+        def __init__(self, *args, bias=True, **kwargs):
+            super().__init__(*args, **kwargs)
+            if not bias:
+                self.proj.bias = None
+
+    def resample_patch_embed(patch_embed, new_size, **kwargs):
+        if tuple(patch_embed.shape[-2:]) != tuple(new_size):
+            raise RuntimeError('Patch-embedding resampling requires timm>=0.9.8.')
+        return patch_embed
+
+    def resample_abs_pos_embed(posemb, new_size, num_prefix_tokens=1, **kwargs):
+        if posemb.shape[1] - num_prefix_tokens != new_size[0] * new_size[1]:
+            raise RuntimeError('Positional-embedding resampling requires timm>=0.9.8.')
+        return posemb
 from timm.models.vision_transformer import _load_weights # type: ignore[import-untyped]
 
 from backbone.utils.layers import IncrementalClassifier
@@ -309,6 +332,8 @@ class VisionTransformer(MammothBackbone):
         # Classifier Head
         self.fc_norm = norm_layer(embed_dim) if use_fc_norm else nn.Identity()
         self.head = IncrementalClassifier(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
+        if _TIMM_LEGACY:
+            self.pre_logits = nn.Identity()
 
         if weight_init != 'skip':
             self.init_weights(weight_init)
@@ -642,6 +667,34 @@ def create_vision_transformer(variant, base_class=VisionTransformer, pretrained=
         _filter_fn = partial(filter_fn, interpolation='bilinear', antialias=False)
     else:
         _filter_fn = filter_fn
+
+    if _TIMM_LEGACY:
+        if variant != 'vit_base_patch16_224.augreg_in21k_ft_in1k':
+            raise RuntimeError(f'ViT variant {variant} is not supported with timm<0.9.8.')
+
+        from timm.models.vision_transformer import default_cfgs # type: ignore[import-untyped]
+
+        # timm 0.4.12 exposes these exact AugReg weights under the untagged
+        # vit_base_patch16_224 default config. Newer timm versions expose the
+        # same artifact as vit_base_patch16_224.augreg_in21k_ft_in1k.
+        default_cfg = dict(default_cfgs['vit_base_patch16_224'])
+        expected_url = (
+            'https://storage.googleapis.com/vit_models/augreg/'
+            'B_16-i21k-300ep-lr_0.001-aug_medium1-wd_0.1-do_0.0-sd_0.0--'
+            'imagenet2012-steps_20k-lr_0.01-res_224.npz'
+        )
+        if default_cfg.get('url') != expected_url:
+            raise RuntimeError(f'timm legacy ViT-B/16 resolves to an unexpected checkpoint: {default_cfg.get("url")!r}.')
+        return build_model_with_cfg(
+            base_class,
+            variant,
+            pretrained,
+            default_cfg=default_cfg,
+            pretrained_filter_fn=_filter_fn,
+            pretrained_strict=True,
+            pretrained_custom_load=True,
+            **kwargs,
+        )
 
     if variant == 'vit_base_patch16_224_in21k_fn_in1k_old':
         from timm.models import resolve_pretrained_cfg # type: ignore[import-untyped]
