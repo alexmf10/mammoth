@@ -5,16 +5,21 @@ SIZE: [224, 224]
 MEAN: [0, 0, 0]
 STD: [1, 1, 1]
 TRANSFORM:
-  - RandomResizedCrop:
-      size: 224
-  - RandomHorizontalFlip
+  - Resize:
+      size: [224, 224]
+      interpolation: 3  # InterpolationMode.BICUBIC
+      antialias: true
+  - RandomHorizontalFlip:
+      p: 0.5
   - ToTensor
   - Normalize:
       mean: [0, 0, 0]
       std: [1, 1, 1]
 TEST_TRANSFORM:
   - Resize:
-      size: 224
+      size: [224, 224]
+      interpolation: 3  # InterpolationMode.BICUBIC
+      antialias: true
   - ToTensor
   - Normalize:
       mean: [0, 0, 0]
