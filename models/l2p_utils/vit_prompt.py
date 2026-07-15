@@ -202,6 +202,6 @@ def vit_base_patch16_224_l2p(pretrained=False, **kwargs):
     ImageNet-1k weights fine-tuned from in21k @ 224x224, source https://github.com/google-research/vision_transformer.
     """
     model_kwargs = dict(patch_size=16, embed_dim=768, depth=12, num_heads=12, **kwargs)
-    model = create_vision_transformer('vit_base_patch16_224_in21k_fn_in1k_old', base_class=VisionTransformer,
+    model = create_vision_transformer('vit_base_patch16_224.augreg_in21k_ft_in1k', base_class=VisionTransformer,
                                       pretrained=pretrained, filter_fn=checkpoint_filter_fn, **model_kwargs)
     return model
