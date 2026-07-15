@@ -173,4 +173,12 @@ def get_dataset(args: Namespace) -> ContinualDataset:
 # import all files in the `datasets` folder to register the datasets
 for file in os.listdir(os.path.dirname(__file__)):
     if file.endswith('.py') and file != '__init__.py':
-        importlib.import_module(f'datasets.{file[:-3]}')
+        module_name = f'datasets.{file[:-3]}'
+        try:
+            importlib.import_module(module_name)
+        except Exception as e:
+            warn_once(
+                f'Could not import optional dataset module {module_name}. '
+                'The corresponding dataset will be unavailable.'
+            )
+            warn_once(e)
