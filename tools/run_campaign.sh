@@ -252,6 +252,9 @@ EFFECTIVE_AVAILABLE_BYTES=0
 AVAILABLE_SOURCE="unknown"
 QUOTA_REPORT=""
 QUOTA_CHECK_RESULT="not_checked"
+HOME_FILESYSTEM_TYPE=""
+HOME_MOUNT_OPTIONS=""
+HOME_MOUNT_QUOTA_STATUS="not_checked"
 
 resolve_checkpoint_policy() {
     if [[ -f "$CHECKPOINT_POLICY_FILE" ]]; then
@@ -284,6 +287,20 @@ resolve_checkpoint_policy() {
     EFFECTIVE_AVAILABLE_BYTES=$FILESYSTEM_AVAILABLE_BYTES
     AVAILABLE_SOURCE="df"
 
+    if command -v findmnt >/dev/null 2>&1; then
+        HOME_FILESYSTEM_TYPE=$(findmnt -T "$HOME" -n -o FSTYPE 2>/dev/null) || HOME_FILESYSTEM_TYPE=""
+        HOME_MOUNT_OPTIONS=$(findmnt -T "$HOME" -n -o OPTIONS 2>/dev/null) || HOME_MOUNT_OPTIONS=""
+        if [[ -z "$HOME_FILESYSTEM_TYPE" || -z "$HOME_MOUNT_OPTIONS" ]]; then
+            HOME_MOUNT_QUOTA_STATUS="unknown"
+        elif printf '%s\n' "$HOME_MOUNT_OPTIONS" | grep -Eiq '(^|,)(quota|usrquota|grpquota|prjquota|usrjquota=[^,]*|grpjquota=[^,]*|jqfmt=[^,]*)(,|$)'; then
+            HOME_MOUNT_QUOTA_STATUS="quota_options_present"
+        else
+            HOME_MOUNT_QUOTA_STATUS="no_quota_options"
+        fi
+    else
+        HOME_MOUNT_QUOTA_STATUS="findmnt_unavailable"
+    fi
+
     if command -v quota >/dev/null 2>&1; then
         local quota_exit
         QUOTA_REPORT=$(quota -w 2>&1)
@@ -298,6 +315,15 @@ resolve_checkpoint_policy() {
             QUOTA_CHECK_RESULT="parsed_limit"
         elif ((quota_exit == 0)) && { [[ -z "$QUOTA_REPORT" ]] || printf '%s\n' "$QUOTA_REPORT" | grep -Eiq '(^|:)[[:space:]]*none[[:space:]]*$|no quota|quotas? (are )?not enabled'; }; then
             QUOTA_CHECK_RESULT="explicitly_no_quota"
+        elif ((quota_exit == 1)) && [[ -z "$QUOTA_REPORT" ]] \
+            && [[ "$HOME_FILESYSTEM_TYPE" =~ ^ext[234]$ ]] \
+            && [[ "$HOME_MOUNT_QUOTA_STATUS" == "no_quota_options" ]]; then
+            # `quota -w` on the university server returns 1 with no output
+            # when no quota record exists.  On a local ext filesystem that is
+            # also mounted without any quota option, df is the applicable
+            # capacity limit.  Keep every other unparseable case conservative.
+            QUOTA_CHECK_RESULT="no_quota_record_and_no_mount_options"
+            AVAILABLE_SOURCE="df (no user quota configured)"
         else
             QUOTA_CHECK_RESULT="unparseable"
             CHECKPOINT_POLICY_REASON="disabled: quota exists but its available space could not be proved safely"
@@ -330,6 +356,9 @@ write_checkpoint_policy() {
         printf 'filesystem_available_bytes=%s\n' "$FILESYSTEM_AVAILABLE_BYTES"
         printf 'quota_available_bytes=%s\n' "$QUOTA_AVAILABLE_BYTES"
         printf 'quota_check_result=%s\n' "$QUOTA_CHECK_RESULT"
+        printf 'home_filesystem_type=%s\n' "$HOME_FILESYSTEM_TYPE"
+        printf 'home_mount_options=%s\n' "$HOME_MOUNT_OPTIONS"
+        printf 'home_mount_quota_status=%s\n' "$HOME_MOUNT_QUOTA_STATUS"
         printf 'effective_available_bytes=%s\n' "$EFFECTIVE_AVAILABLE_BYTES"
         printf 'available_source=%s\n' "$AVAILABLE_SOURCE"
         printf '%s\n' 'quota_report_begin'
@@ -345,6 +374,8 @@ print_checkpoint_policy() {
         printf '  smoke probe: %s bytes (%s)\n' "$PROBE_SIZE_BYTES" "$PROBE_PATH"
         printf '  estimate for 15 runs: %s bytes\n' "$ESTIMATED_CHECKPOINT_BYTES"
         printf '  effective free space: %s bytes (source: %s)\n' "$EFFECTIVE_AVAILABLE_BYTES" "$AVAILABLE_SOURCE"
+        printf '  quota check: %s; filesystem: %s; mount quota status: %s\n' \
+            "$QUOTA_CHECK_RESULT" "${HOME_FILESYSTEM_TYPE:-unknown}" "$HOME_MOUNT_QUOTA_STATUS"
         printf '  required safety margin after checkpoints: %s bytes (15 GiB)\n' "$SAFETY_MARGIN_BYTES"
     fi
 }

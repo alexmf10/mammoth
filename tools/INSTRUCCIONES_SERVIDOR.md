@@ -296,7 +296,11 @@ estimado para 15 más margen de 15 GiB) o los **omite**. No cambies esa decisió
 manualmente sin revisarla. Si `quota` no existe o su salida no se puede
 interpretar con seguridad, la política automática los omite de forma
 conservadora: no presupone que todo el espacio mostrado por `df` esté dentro de
-tu cuota personal.
+tu cuota personal. Hay una excepción comprobada para este servidor: si
+`quota -w` no devuelve ningún registro, termina con código 1 y el filesystem
+local `ext2`/`ext3`/`ext4` de `$HOME` está montado sin opciones de quota, se
+considera que no hay cuota de usuario configurada y se usa el espacio de `df`.
+La salida lo identifica como `no_quota_record_and_no_mount_options`.
 
 **Si falla o el orden/flags no coinciden:** devuelve `dry_run.txt` y no lances
 la campaña.
