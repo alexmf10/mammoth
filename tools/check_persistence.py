@@ -143,11 +143,13 @@ def select_record(
     after_line: int,
 ) -> tuple[int, dict[str, Any]]:
     """Return the newest record matching the smoke-run identity."""
+    normalized_model = model.replace("_", "-")
     matching: list[tuple[int, dict[str, Any]]] = []
     for line_number, record in records:
         if line_number <= after_line:
             continue
-        if record.get("model") != model:
+        record_model = record.get("model")
+        if not isinstance(record_model, str) or record_model.replace("_", "-") != normalized_model:
             continue
         if record.get("dataset") != dataset:
             continue
