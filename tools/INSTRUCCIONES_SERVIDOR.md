@@ -493,3 +493,38 @@ la salida de `ps` y pide revisión antes de forzar la muerte.
 La planificación inicial es de **4–5 días** para los 15 runs. Tras los
 primeros runs completos se recalcula la ETA con sus `epoch_times` reales en la
 RTX 3060.
+
+## Ampliar de 5 a 30 seeds
+
+Cuando las seeds 0–4 hayan terminado, la ampliación exacta a 30 seeds usa el
+rango inclusivo 5–29. El orden se mantiene igual: para cada seed se ejecutan
+L2P, DualPrompt y CODA-Prompt. Primero comprueba el plan:
+
+```bash
+cd /home/amf380/mammoth
+export PYTHON_BIN="/opt/environment/bin/python"
+export PYTHONPATH="$HOME/.local/mammoth-pydeps${PYTHONPATH:+:$PYTHONPATH}"
+
+bash tools/run_campaign.sh --dry-run --seed-start 5 --seed-end 29 \
+  > results/campaign/dry_run_s5-s29.txt 2>&1
+
+grep -c '^\[RUN\]' results/campaign/dry_run_s5-s29.txt
+grep -E 'Checkpoint policy|save final checkpoints|estimate for 75 runs' \
+  results/campaign/dry_run_s5-s29.txt
+```
+
+El contador debe ser 75. La política de espacio se guarda separadamente en
+`results/campaign/checkpoint_policy_s5-s29.txt`. Cuando ya no exista un driver
+activo, lanza la ampliación con:
+
+```bash
+nohup bash tools/run_campaign.sh --seed-start 5 --seed-end 29 \
+  >> results/campaign/driver.log 2>&1 < /dev/null &
+
+NOHUP_PID=$!
+disown "$NOHUP_PID" 2>/dev/null || true
+echo "Ampliación lanzada con PID $NOHUP_PID"
+```
+
+El mismo comando reanuda la ampliación tras una caída: los runs que ya tengan
+`.done` se saltan. Al finalizar debe haber 90 marcadores `.done` en total.

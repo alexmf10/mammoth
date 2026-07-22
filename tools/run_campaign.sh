@@ -10,20 +10,26 @@ set -uo pipefail
 readonly DEFAULT_REPO_ROOT="/home/amf380/mammoth"
 readonly OVERLAY_DIR="$HOME/.local/mammoth-pydeps"
 readonly SAFETY_MARGIN_BYTES=$((15 * 1024 * 1024 * 1024))
-readonly EXPECTED_RUNS=15
+readonly MODELS_PER_SEED=3
 
 REPO_ROOT="${MAMMOTH_REPO_ROOT:-$DEFAULT_REPO_ROOT}"
 MODE="full"
 DRY_RUN=0
+SEED_START=0
+SEED_END=4
+SEED_RANGE_EXPLICIT=0
 CURRENT_CHILD_PID=""
 DRIVER_PID_FILE=""
 
 usage() {
     cat <<'EOF'
 Usage:
-  bash tools/run_campaign.sh             Run/resume the complete 15-run campaign.
-  bash tools/run_campaign.sh --dry-run   Print all 15 commands without running them.
-  bash tools/run_campaign.sh --smoke     Run/resume the single L2P acceptance smoke.
+  bash tools/run_campaign.sh                         Run/resume seeds 0 through 4.
+  bash tools/run_campaign.sh --seed-start 5 --seed-end 29
+                                                    Run/resume seeds 5 through 29.
+  bash tools/run_campaign.sh --dry-run --seed-start 5 --seed-end 29
+                                                    Preview seeds 5 through 29.
+  bash tools/run_campaign.sh --smoke                Run/resume the L2P acceptance smoke.
 
 Required environment variable:
   PYTHON_BIN   Absolute path to the Python interpreter selected in Jupyter.
@@ -45,6 +51,18 @@ while (($# > 0)); do
             [[ "$MODE" == "full" && "$DRY_RUN" -eq 0 ]] || die "--dry-run cannot be combined with another mode."
             DRY_RUN=1
             ;;
+        --seed-start)
+            (($# >= 2)) || die "--seed-start requires an integer value."
+            SEED_START="$2"
+            SEED_RANGE_EXPLICIT=1
+            shift
+            ;;
+        --seed-end)
+            (($# >= 2)) || die "--seed-end requires an integer value."
+            SEED_END="$2"
+            SEED_RANGE_EXPLICIT=1
+            shift
+            ;;
         -h|--help)
             usage
             exit 0
@@ -55,6 +73,16 @@ while (($# > 0)); do
     esac
     shift
 done
+
+[[ "$SEED_START" =~ ^[0-9]+$ ]] || die "--seed-start must be a non-negative integer: $SEED_START"
+[[ "$SEED_END" =~ ^[0-9]+$ ]] || die "--seed-end must be a non-negative integer: $SEED_END"
+SEED_START=$((10#$SEED_START))
+SEED_END=$((10#$SEED_END))
+((SEED_START <= SEED_END)) || die "--seed-start cannot be greater than --seed-end."
+if [[ "$MODE" == "smoke" ]] && ((SEED_RANGE_EXPLICIT)); then
+    die "Seed ranges cannot be combined with --smoke."
+fi
+readonly EXPECTED_RUNS=$(((SEED_END - SEED_START + 1) * MODELS_PER_SEED))
 
 [[ -n "${PYTHON_BIN:-}" ]] || die "PYTHON_BIN is not set. Copy the exact sys.executable path from Jupyter first."
 [[ "$PYTHON_BIN" = /* ]] || die "PYTHON_BIN must be an absolute path: $PYTHON_BIN"
@@ -75,7 +103,11 @@ else
 fi
 
 MANIFEST="$CAMPAIGN_ROOT/manifest.tsv"
-CHECKPOINT_POLICY_FILE="$CAMPAIGN_ROOT/checkpoint_policy.txt"
+if [[ "$MODE" == "full" ]] && ((SEED_START != 0 || SEED_END != 4)); then
+    CHECKPOINT_POLICY_FILE="$CAMPAIGN_ROOT/checkpoint_policy_s${SEED_START}-s${SEED_END}.txt"
+else
+    CHECKPOINT_POLICY_FILE="$CAMPAIGN_ROOT/checkpoint_policy.txt"
+fi
 readonly MANIFEST_HEADER=$'run_id\tmodel\tseed\tcommand\tpid\tstarted_at\tfinished_at\tduration_seconds\tprocess_exit_code\texit_code\tstatus\tlog_path\tpeak_json_path\tlogs_pyd_path\tcheckpoint_path\tdone_path'
 
 cleanup_driver_pid() {
@@ -339,9 +371,9 @@ resolve_checkpoint_policy() {
     local required_with_margin=$((ESTIMATED_CHECKPOINT_BYTES + SAFETY_MARGIN_BYTES))
     if ((EFFECTIVE_AVAILABLE_BYTES > required_with_margin)); then
         CHECKPOINTS_ENABLED=1
-        CHECKPOINT_POLICY_REASON="enabled: estimated 15-checkpoint footprint leaves more than 15 GiB free"
+        CHECKPOINT_POLICY_REASON="enabled: estimated ${EXPECTED_RUNS}-checkpoint footprint leaves more than 15 GiB free"
     else
-        CHECKPOINT_POLICY_REASON="disabled: estimated 15-checkpoint footprint would not leave more than 15 GiB free"
+        CHECKPOINT_POLICY_REASON="disabled: estimated ${EXPECTED_RUNS}-checkpoint footprint would not leave more than 15 GiB free"
     fi
 }
 
@@ -349,9 +381,12 @@ write_checkpoint_policy() {
     {
         printf 'save_final_checkpoints=%s\n' "$CHECKPOINTS_ENABLED"
         printf 'reason=%s\n' "$CHECKPOINT_POLICY_REASON"
+        printf 'seed_start=%s\n' "$SEED_START"
+        printf 'seed_end=%s\n' "$SEED_END"
+        printf 'expected_runs=%s\n' "$EXPECTED_RUNS"
         printf 'smoke_probe_path=%s\n' "$PROBE_PATH"
         printf 'smoke_probe_bytes=%s\n' "$PROBE_SIZE_BYTES"
-        printf 'estimated_15_checkpoints_bytes=%s\n' "$ESTIMATED_CHECKPOINT_BYTES"
+        printf 'estimated_checkpoints_bytes=%s\n' "$ESTIMATED_CHECKPOINT_BYTES"
         printf 'safety_margin_bytes=%s\n' "$SAFETY_MARGIN_BYTES"
         printf 'filesystem_available_bytes=%s\n' "$FILESYSTEM_AVAILABLE_BYTES"
         printf 'quota_available_bytes=%s\n' "$QUOTA_AVAILABLE_BYTES"
@@ -372,7 +407,7 @@ print_checkpoint_policy() {
     printf '  save final checkpoints: %s\n' "$CHECKPOINTS_ENABLED"
     if ((PROBE_SIZE_BYTES > 0)); then
         printf '  smoke probe: %s bytes (%s)\n' "$PROBE_SIZE_BYTES" "$PROBE_PATH"
-        printf '  estimate for 15 runs: %s bytes\n' "$ESTIMATED_CHECKPOINT_BYTES"
+        printf '  estimate for %s runs: %s bytes\n' "$EXPECTED_RUNS" "$ESTIMATED_CHECKPOINT_BYTES"
         printf '  effective free space: %s bytes (source: %s)\n' "$EFFECTIVE_AVAILABLE_BYTES" "$AVAILABLE_SOURCE"
         printf '  quota check: %s; filesystem: %s; mount quota status: %s\n' \
             "$QUOTA_CHECK_RESULT" "${HOME_FILESYSTEM_TYPE:-unknown}" "$HOME_MOUNT_QUOTA_STATUS"
@@ -630,7 +665,7 @@ if [[ "$MODE" == "full" ]]; then
 fi
 
 if ((DRY_RUN)); then
-    printf '\nComplete campaign plan (seed outer loop; model inner loop):\n'
+    printf '\nCampaign plan for seeds %s through %s (seed outer loop; model inner loop):\n' "$SEED_START" "$SEED_END"
 else
     init_runtime_files
     if [[ "$MODE" == "full" && ! -f "$CHECKPOINT_POLICY_FILE" ]]; then
@@ -650,7 +685,7 @@ if [[ "$MODE" == "smoke" ]]; then
         failures=$((failures + 1))
     fi
 else
-    for seed in 0 1 2 3 4; do
+    for ((seed = SEED_START; seed <= SEED_END; seed++)); do
         for model in l2p dualprompt coda_prompt; do
             run_one "$model" "$seed"
             run_status=$?
