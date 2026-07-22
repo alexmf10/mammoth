@@ -27,6 +27,7 @@ from utils.checkpoints import mammoth_load_checkpoint, save_mammoth_checkpoint, 
 from utils.loggers import log_extra_metrics, Logger
 from utils.schedulers import get_scheduler
 from utils.stats import track_system_stats
+from utils.vram import VRAMPeakTracker
 
 try:
     import wandb
@@ -64,7 +65,8 @@ def train_single_epoch(model: ContinualModel,
                        epoch: int,
                        pbar: tqdm,
                        system_tracker=None,
-                       scheduler=None) -> int:
+                       scheduler=None,
+                       vram_peak_tracker=None) -> int:
     """
     Trains the model for a single epoch.
 
@@ -116,6 +118,8 @@ def train_single_epoch(model: ContinualModel,
         if args.code_optimization == 0 and 'cuda' in str(args.device):
             torch.cuda.synchronize()
         system_tracker()
+        if vram_peak_tracker is not None:
+            vram_peak_tracker()
         i += 1
 
         pbar.set_postfix({'loss': loss, 'lr': model.opt.param_groups[0]['lr']}, refresh=False)
@@ -157,7 +161,7 @@ def train(model: ContinualModel, dataset: ContinualDataset,
     model.net.to(model.device)
     torch.cuda.empty_cache()
 
-    with track_system_stats(logger, device=args.device) as system_tracker:
+    with VRAMPeakTracker(args) as vram_peak_tracker, track_system_stats(logger, device=args.device) as system_tracker:
         results, results_mask_classes = [], []
 
         if args.eval_future:
@@ -262,7 +266,7 @@ def train(model: ContinualModel, dataset: ContinualDataset,
                     train_pbar.set_description(f"Task {cur_task + 1} - Epoch {epoch + 1}")
 
                     train_single_epoch(model, train_loader, args, pbar=train_pbar, epoch=epoch,
-                                       system_tracker=system_tracker, scheduler=scheduler)
+                                       system_tracker=system_tracker, scheduler=scheduler, vram_peak_tracker=vram_peak_tracker)
 
                     model.meta_end_epoch(epoch, dataset)
                     epoch_time = time.perf_counter() - epoch_start_time

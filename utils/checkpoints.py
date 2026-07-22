@@ -269,7 +269,7 @@ def _check_loaded_args(args, loaded_args):
 
     ignored_args = ['loadcheck', 'start_from', 'stop_after', 'conf_jobnum', 'conf_host', 'conf_timestamp', 'distributed', 'examples_log', 'examples_full_log',
                     'intensive_savecheck', 'job_number', 'conf_git_commit', 'loss_log', 'tensorboard', 'seed', 'savecheck', 'notes', 'non_verbose', 'autorelaunch',
-                    'force_compat', 'conf_external_path', 'ckpt_name']
+                    'force_compat', 'conf_external_path', 'ckpt_name', 'vram_peak_log', 'cuda_memory_limit_mb']
     mismatched_args = [x for x in pruned_original_args if x not in ignored_args and (
         x not in vars(loaded_args) or _check_arg(pruned_original_args[x], getattr(loaded_args, x)))]
 
